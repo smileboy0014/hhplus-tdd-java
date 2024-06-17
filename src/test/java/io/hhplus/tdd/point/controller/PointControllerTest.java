@@ -46,7 +46,7 @@ class PointControllerTest {
                 .andExpect(jsonPath("$.point").value(1000));
     }
 
-    @DisplayName("특정 유저의 포인트를 충전한다.")
+    @DisplayName("유저의 포인트를 충전한다.")
     @Test
     void charge() throws Exception {
         //given
@@ -63,6 +63,30 @@ class PointControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").value(1))
                 .andExpect(jsonPath("$.point").value(amount));
+
+    }
+
+
+    @DisplayName("유저의 포인트를 사용한다.")
+    @Test
+    void use() throws Exception {
+        //given
+        long userId = 1;
+        long amount = 1000;
+        long useAmount = 0;
+
+        UserPoint result = new UserPoint(userId, useAmount, System.currentTimeMillis());
+        when(pointService.use(userId, amount)).thenReturn(result);
+
+        //when //then
+        mockMvc.perform(patch("/point/%s/use".formatted(userId))
+                .content(objectMapper.writeValueAsString(amount))
+                .contentType(MediaType.APPLICATION_JSON))
+                .andDo(print())
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(1))
+                .andExpect(jsonPath("$.point").value(useAmount));
+
 
     }
 }
