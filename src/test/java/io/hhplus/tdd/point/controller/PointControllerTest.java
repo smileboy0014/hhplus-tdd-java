@@ -1,7 +1,9 @@
 package io.hhplus.tdd.point.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.hhplus.tdd.point.domain.PointHistory;
 import io.hhplus.tdd.point.domain.UserPoint;
+import io.hhplus.tdd.point.enums.TransactionType;
 import io.hhplus.tdd.point.service.PointService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -11,6 +13,9 @@ import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.util.List;
+
+import static org.hamcrest.Matchers.hasSize;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
@@ -29,6 +34,7 @@ class PointControllerTest {
 
     @Autowired
     private ObjectMapper objectMapper;
+
 
     @DisplayName("유저의 포인트를 조회한다")
     @Test
@@ -86,6 +92,24 @@ class PointControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").value(1))
                 .andExpect(jsonPath("$.point").value(useAmount));
+
+
+    }
+
+    @DisplayName("특정 유저의 포인트 충전/이용 내역을 조회한다.")
+    @Test
+    void history() throws Exception {
+        //given
+        long userId = 1;
+        List<PointHistory> result = List.of(new PointHistory(1, userId, 100, TransactionType.CHARGE, System.currentTimeMillis()));
+
+        when(pointService.getHistory(userId)).thenReturn(result);
+
+        //when //then
+        mockMvc.perform(get("/point/%s/histories".formatted(userId)))
+                .andDo(print())
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(1)));
 
 
     }
