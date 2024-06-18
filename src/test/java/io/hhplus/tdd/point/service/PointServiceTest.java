@@ -35,7 +35,7 @@ class PointServiceTest {
     void setUp() {
         // MockitoAnnotations.initMocks(this); deprecated!
         MockitoAnnotations.openMocks(this);
-        pointService = new PointServiceImpl(userPointRepository,pointHistoryRepository);
+        pointService = new PointService(userPointRepository,pointHistoryRepository);
     }
 
     @DisplayName("유저 id를 받아, 해당 유저의 포인트를 조회한다")
