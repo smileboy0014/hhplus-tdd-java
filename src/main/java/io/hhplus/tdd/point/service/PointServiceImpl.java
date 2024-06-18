@@ -1,11 +1,17 @@
 package io.hhplus.tdd.point.service;
 
-import io.hhplus.tdd.database.UserPointTable;
+import io.hhplus.tdd.point.domain.PointHistory;
 import io.hhplus.tdd.point.domain.UserPoint;
 import io.hhplus.tdd.point.exception.PointException;
+import io.hhplus.tdd.point.repository.PointHistoryRepository;
+import io.hhplus.tdd.point.repository.UserPointRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
+import java.util.List;
+
+import static io.hhplus.tdd.point.enums.TransactionType.CHARGE;
+import static io.hhplus.tdd.point.enums.TransactionType.USE;
 import static io.hhplus.tdd.point.exception.ErrorCode.INVALID_CHARGE_POINT;
 import static io.hhplus.tdd.point.exception.ErrorCode.NOT_ENOUGH_POINT;
 
@@ -13,12 +19,14 @@ import static io.hhplus.tdd.point.exception.ErrorCode.NOT_ENOUGH_POINT;
 @RequiredArgsConstructor
 public class PointServiceImpl implements PointService {
 
-    private final UserPointTable userPointTable;
+    private final UserPointRepository userPointRepository;
+
+    private final PointHistoryRepository pointHistoryRepository;
 
     @Override
     public UserPoint getPoint(long id) {
 
-        return userPointTable.selectById(id);
+        return userPointRepository.selectById(id);
     }
 
     @Override
@@ -28,9 +36,15 @@ public class PointServiceImpl implements PointService {
         if (!validPoint(amount)) {
             throw new PointException(INVALID_CHARGE_POINT, "0보다 작은 포인트는 충전되지 않습니다.");
         }
-        UserPoint curUser = userPointTable.selectById(id);
+        UserPoint curUser = userPointRepository.selectById(id);
 
-        return userPointTable.insertOrUpdate(id, curUser.point() + amount);
+        // 포인트 충전
+        UserPoint userPoint = userPointRepository.insertOrUpdate(id, curUser.point() + amount);
+
+        // 포인트 충전 내역 추가
+        pointHistoryRepository.insert(id, amount, CHARGE, System.currentTimeMillis());
+
+        return userPoint;
     }
 
     @Override
@@ -41,14 +55,26 @@ public class PointServiceImpl implements PointService {
             throw new PointException(INVALID_CHARGE_POINT, "0보다 작은 포인트는 사용할 수 없습니다.");
         }
 
-        UserPoint userPoint = userPointTable.selectById(id);
+        UserPoint curUser = userPointRepository.selectById(id);
 
         // 포인트가 부족하지 않은지 체크
-        if (!isPossibleUse(amount, userPoint.point())) {
+        if (!isPossibleUse(amount, curUser.point())) {
             throw new PointException(NOT_ENOUGH_POINT, "포인트가 부족합니다.");
         }
 
-        return userPointTable.insertOrUpdate(id, userPoint.point() - amount);
+        // 포인트 차감
+        UserPoint userPoint = userPointRepository.insertOrUpdate(id, curUser.point() - amount);
+
+        // 포인트 차감 내역 추가
+        pointHistoryRepository.insert(id, amount, USE, System.currentTimeMillis());
+
+        return userPoint;
+    }
+
+    @Override
+    public List<PointHistory> getHistory(long id) {
+
+        return pointHistoryRepository.selectAllByUserId(id);
     }
 
     private boolean validPoint(long amount) {
