@@ -1,16 +1,10 @@
-package io.hhplus.tdd.point.service;
+package io.hhplus.tdd.point.integration;
 
-import io.hhplus.tdd.database.PointHistoryTable;
-import io.hhplus.tdd.database.UserPointTable;
-import io.hhplus.tdd.point.common.LockHelper;
 import io.hhplus.tdd.point.domain.PointHistory;
 import io.hhplus.tdd.point.domain.UserPoint;
-import io.hhplus.tdd.point.exception.PointException;
 import io.hhplus.tdd.point.repository.PointHistoryRepository;
-import io.hhplus.tdd.point.repository.PointHistoryRepositoryImpl;
 import io.hhplus.tdd.point.repository.UserPointRepository;
-import io.hhplus.tdd.point.repository.UserPointRepositoryImpl;
-import org.junit.jupiter.api.BeforeEach;
+import io.hhplus.tdd.point.service.PointService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -22,32 +16,32 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import static io.hhplus.tdd.point.exception.ErrorCode.INVALID_CHARGE_POINT;
-import static io.hhplus.tdd.point.exception.ErrorCode.NOT_ENOUGH_POINT;
+import static io.hhplus.tdd.point.enums.TransactionType.CHARGE;
+import static io.hhplus.tdd.point.enums.TransactionType.USE;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-// 모든 테스트의 유저 id를 다르게 함으로써 stub 을 사용하지 않아도 됨 + tearDown 도 필요 없음
+@SpringBootTest
+public class IntegrationTest {
 
-class PointServiceTest {
-
+    @Autowired
     private PointService pointService;
 
-    @BeforeEach
-    void setUp() {
-        UserPointRepository userPointRepository = new UserPointRepositoryImpl(new UserPointTable());
-        PointHistoryRepository pointHistoryRepository = new PointHistoryRepositoryImpl(new PointHistoryTable());
-        LockHelper lockHelper = new LockHelper();
+    @Autowired
+    private UserPointRepository userPointRepository;
 
-        pointService = new PointService(userPointRepository, pointHistoryRepository, lockHelper);
-    }
+    @Autowired
+    private PointHistoryRepository pointHistoryRepository;
+
+
 
     @DisplayName("유저 id를 받아, 해당 유저의 포인트를 조회한다")
     @Test
     void getPoint() {
         //given
         long userId = 1;
-        long amount = 0;
+        long amount = 1000;
+
+        userPointRepository.insertOrUpdate(userId, amount);
 
         // when
         UserPoint result = pointService.getPoint(userId);
@@ -56,42 +50,36 @@ class PointServiceTest {
         assertThat(result.point()).isEqualTo(amount);
     }
 
-    @DisplayName("받은 포인트만큼 포인트를 충전한다.")
+    @DisplayName("기존 1000 포인트에 1000포인트를 충전하면 2000 포인트가 된다.")
     @Test
     void charge() {
         //given
         long userId = 2;
+        long initAmount = 1000;
         long chargeAmount = 1000;
+        long resultAmount = 2000;
+
+        userPointRepository.insertOrUpdate(userId, initAmount);
+
         //when
         UserPoint result = pointService.charge(userId, chargeAmount);
 
         //then
-        assertThat(result.point()).isEqualTo(chargeAmount);
+        assertThat(result.point()).isEqualTo(resultAmount);
     }
 
-    @DisplayName("0 미만의 포인트를 충전하려고하면 예외를 반환한다.")
-    @Test
-    void chargeInvalidPoint() {
-        //given
-        long userId = 3;
-        long amount = -1000;
 
-        //when //then
-        assertThatThrownBy(() -> pointService.charge(userId, amount))
-                .isInstanceOf(PointException.class)
-                .extracting("errorCode")
-                .isEqualTo(INVALID_CHARGE_POINT);
-
-    }
-
-    @DisplayName("동시에 같은 유저가 100 포인트를 5번 충전하면 500이 되어야 한다.")
+    @DisplayName("5000 포인트를 가진 유저가 동시에 같은 유저가 100 포인트를 5번 충전하면 5500이 되어야 한다.")
     @Test
     void chargeWhenConcurrencyEnv() throws InterruptedException {
         //given
-        long userId = 4;
+        long userId = 3;
         int numThreads = 5;
+        long initAmount = 5000;
         long chargeAmount = 100;
-        long resultAmount = 500;
+        long resultAmount = 5500;
+
+        userPointRepository.insertOrUpdate(userId, initAmount);
 
         CountDownLatch doneSignal = new CountDownLatch(numThreads);
         ExecutorService executorService = Executors.newFixedThreadPool(numThreads);
@@ -125,12 +113,12 @@ class PointServiceTest {
     @Test
     void use() {
         //given
-        long userId = 5;
+        long userId = 4;
         long initAmount = 1000;
         long useAmount = 100;
         long resultAmount = 900;
 
-        pointService.charge(userId, initAmount);
+        userPointRepository.insertOrUpdate(userId, initAmount);
 
         //when
         UserPoint result = pointService.use(userId, useAmount);
@@ -139,47 +127,17 @@ class PointServiceTest {
         assertThat(result.point()).isEqualTo(resultAmount);
     }
 
-    @DisplayName("0 미만의 포인트를 사용하려고 하면 예외를 반환한다.")
-    @Test
-    void useInvalidPoint() {
-        //given
-        long userId = 6;
-        long amount = -1000;
-
-        //when //then
-        assertThatThrownBy(() -> pointService.use(userId, amount))
-                .isInstanceOf(PointException.class)
-                .extracting("errorCode")
-                .isEqualTo(INVALID_CHARGE_POINT);
-
-    }
-
-    @DisplayName("가지고 있는 포인트 이상의 포인트를 사용하려고 하면 예외를 반환한다.")
-    @Test
-    void useOverPoint() {
-        //given
-        long userId = 7;
-        long useAmount = 2000;
-
-        //when //then
-        assertThatThrownBy(() -> pointService.use(userId, useAmount))
-                .isInstanceOf(PointException.class)
-                .extracting("errorCode")
-                .isEqualTo(NOT_ENOUGH_POINT);
-
-    }
-
     @DisplayName("동시에 500포인트를 가진 같은 유저가 100 포인트를 5번 사용하면 0 포인트가 된다.")
     @Test
     void useWhenConcurrencyEnv() throws InterruptedException {
         //given
-        long userId = 8;
+        long userId = 5;
         int numThreads = 5;
         long useAmount = 100;
         long remainAmount = 500;
         long resultAmount = 0;
 
-        pointService.charge(userId, remainAmount);
+        userPointRepository.insertOrUpdate(userId, remainAmount);
 
         CountDownLatch doneSignal = new CountDownLatch(numThreads);
         ExecutorService executorService = Executors.newFixedThreadPool(numThreads);
@@ -213,15 +171,19 @@ class PointServiceTest {
     @Test
     void history() {
         //given
-        long userId = 9;
-        long initAmount = 1000;
+        long userId = 6;
+        long amount1 = 1000;
+        long amount2 = 500;
+        long amount3 = 1000;
 
-        pointService.charge(userId, initAmount);
+        pointHistoryRepository.insert(userId, amount1, CHARGE, System.currentTimeMillis());
+        pointHistoryRepository.insert(userId, amount2, USE, System.currentTimeMillis());
+        pointHistoryRepository.insert(userId, amount3, CHARGE, System.currentTimeMillis());
 
         //when
         List<PointHistory> result = pointService.getHistory(userId);
 
         //then
-        assertThat(result.size()).isEqualTo(1);
+        assertThat(result.size()).isEqualTo(3);
     }
 }
