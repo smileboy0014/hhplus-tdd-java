@@ -1,23 +1,28 @@
 package io.hhplus.tdd.point.service;
 
+import io.hhplus.tdd.point.common.LockHelper;
 import io.hhplus.tdd.point.domain.PointHistory;
 import io.hhplus.tdd.point.domain.UserPoint;
-import io.hhplus.tdd.point.enums.TransactionType;
 import io.hhplus.tdd.point.exception.PointException;
 import io.hhplus.tdd.point.repository.PointHistoryRepository;
 import io.hhplus.tdd.point.repository.UserPointRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
 
 import java.util.List;
+import java.util.function.Supplier;
 
+import static io.hhplus.tdd.point.enums.TransactionType.CHARGE;
 import static io.hhplus.tdd.point.exception.ErrorCode.INVALID_CHARGE_POINT;
 import static io.hhplus.tdd.point.exception.ErrorCode.NOT_ENOUGH_POINT;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 
 
@@ -28,14 +33,15 @@ class PointServiceTest {
     @Mock
     private UserPointRepository userPointRepository;
 
-    private PointService pointService;
+    @Mock
+    private LockHelper lockHelper;
 
+    @InjectMocks
+    private PointService pointService;
 
     @BeforeEach
     void setUp() {
-        // MockitoAnnotations.initMocks(this); deprecated!
         MockitoAnnotations.openMocks(this);
-        pointService = new PointService(userPointRepository,pointHistoryRepository);
     }
 
     @DisplayName("유저 id를 받아, 해당 유저의 포인트를 조회한다")
@@ -43,43 +49,50 @@ class PointServiceTest {
     void getPoint() {
         //given
         long userId = 1;
-        long initAmount = 1000;
+        long amount = 1000;
 
-        UserPoint userPoint = new UserPoint(userId, initAmount, System.currentTimeMillis());
+        UserPoint userPoint = new UserPoint(userId, amount, System.currentTimeMillis());
+
+        when(userPointRepository.selectById(userId)).thenReturn(userPoint);
 
         // when
-        when(userPointRepository.selectById(userId)).thenReturn(userPoint);
         UserPoint result = pointService.getPoint(userId);
 
         //then
-        assertThat(result.point()).isEqualTo(initAmount);
+        assertThat(result.point()).isEqualTo(amount);
     }
 
     @DisplayName("받은 포인트만큼 포인트를 충전한다.")
     @Test
-    void charge(){
+    void charge() {
         //given
-        long userId = 1;
-        long initAmount = 0;
+        long userId = 2;
+        long remainAmount = 1000;
         long chargeAmount = 1000;
+        long expectedAmount = remainAmount + chargeAmount;
 
-        UserPoint initPoint = new UserPoint(userId, initAmount, System.currentTimeMillis());
-        UserPoint chargePoint = new UserPoint(userId, chargeAmount, System.currentTimeMillis());
+        UserPoint curUserPoint = new UserPoint(userId, remainAmount, System.currentTimeMillis());
+        UserPoint updatedUserPoint = new UserPoint(userId, expectedAmount, System.currentTimeMillis());
+
+        when(userPointRepository.selectById(userId)).thenReturn(curUserPoint);
+        when(userPointRepository.insertOrUpdate(userId, expectedAmount)).thenReturn(updatedUserPoint);
+        when(lockHelper.executeWithLock(eq(userId), Mockito.<Supplier<UserPoint>>any())).thenAnswer(invocation -> {
+            Supplier<UserPoint> supplier = invocation.getArgument(1);
+            return supplier.get();
+        });
 
         //when
-        when(userPointRepository.selectById(userId)).thenReturn(initPoint);
-        when(userPointRepository.insertOrUpdate(userId,chargeAmount)).thenReturn(chargePoint);
         UserPoint result = pointService.charge(userId, chargeAmount);
 
         //then
-        assertThat(result.point()).isEqualTo(chargeAmount);
+        assertThat(result.point()).isEqualTo(expectedAmount);
     }
 
     @DisplayName("0 미만의 포인트를 충전하려고하면 예외를 반환한다.")
     @Test
-    void chargeInvalidPoint(){
+    void chargeInvalidPoint() {
         //given
-        long userId = 1;
+        long userId = 3;
         long amount = -1000;
 
         //when //then
@@ -90,21 +103,27 @@ class PointServiceTest {
 
     }
 
+
     @DisplayName("사용하는 포인트만큼 차감이 된다.")
     @Test
-    void use(){
+    void use() {
         //given
-        long userId = 1;
+        long userId = 4;
         long initAmount = 1000;
         long useAmount = 100;
         long resultAmount = 900;
 
-        UserPoint initPoint = new UserPoint(userId, initAmount, System.currentTimeMillis());
-        UserPoint usePoint = new UserPoint(userId, resultAmount, System.currentTimeMillis());
+        UserPoint initUserPoint = new UserPoint(userId, initAmount, System.currentTimeMillis());
+        UserPoint resultUserPoint = new UserPoint(userId, initAmount - useAmount, System.currentTimeMillis());
+
+        when(userPointRepository.insertOrUpdate(userId, initAmount - useAmount)).thenReturn(resultUserPoint);
+        when(userPointRepository.selectById(userId)).thenReturn(initUserPoint);
+        when(lockHelper.executeWithLock(eq(userId), Mockito.<Supplier<UserPoint>>any())).thenAnswer(invocation -> {
+            Supplier<UserPoint> supplier = invocation.getArgument(1);
+            return supplier.get();
+        });
 
         //when
-        when(userPointRepository.selectById(userId)).thenReturn(initPoint);
-        when(userPointRepository.insertOrUpdate(userId,resultAmount)).thenReturn(usePoint);
         UserPoint result = pointService.use(userId, useAmount);
 
         //then
@@ -113,9 +132,9 @@ class PointServiceTest {
 
     @DisplayName("0 미만의 포인트를 사용하려고 하면 예외를 반환한다.")
     @Test
-    void useInvalidPoint(){
+    void useInvalidPoint() {
         //given
-        long userId = 1;
+        long userId = 5;
         long amount = -1000;
 
         //when //then
@@ -128,21 +147,24 @@ class PointServiceTest {
 
     @DisplayName("가지고 있는 포인트 이상의 포인트를 사용하려고 하면 예외를 반환한다.")
     @Test
-    void useOverPoint(){
+    void useOverPoint() {
         //given
-        long userId = 1;
+        long userId = 6;
         long initAmount = 1000;
         long useAmount = 2000;
-        long resultAmount = -1000;
 
-        UserPoint initPoint = new UserPoint(userId, initAmount, System.currentTimeMillis());
-        UserPoint usePoint = new UserPoint(userId, resultAmount, System.currentTimeMillis());
+        UserPoint initUserPoint = new UserPoint(userId, initAmount, System.currentTimeMillis());
+        UserPoint resultUserPoint = new UserPoint(userId, initAmount - useAmount, System.currentTimeMillis());
 
-        //when
-        when(userPointRepository.selectById(userId)).thenReturn(initPoint);
-        when(userPointRepository.insertOrUpdate(userId,resultAmount)).thenReturn(usePoint);
+        when(userPointRepository.insertOrUpdate(userId, initAmount - useAmount)).thenReturn(resultUserPoint);
+        when(userPointRepository.selectById(userId)).thenReturn(initUserPoint);
+        when(lockHelper.executeWithLock(eq(userId), Mockito.<Supplier<UserPoint>>any())).thenAnswer(invocation -> {
+            Supplier<UserPoint> supplier = invocation.getArgument(1);
+            return supplier.get();
+        });
 
-        //then
+
+        //when //then
         assertThatThrownBy(() -> pointService.use(userId, useAmount))
                 .isInstanceOf(PointException.class)
                 .extracting("errorCode")
@@ -152,20 +174,23 @@ class PointServiceTest {
 
     @DisplayName("포인트 사용 내역을 조회한다.")
     @Test
-    void history(){
+    void history() {
         //given
-        long historyId = 1;
-        long userId = 1;
-        long initAmount = 1000;
+        long pointId = 1;
+        long userId = 7;
+        long chargeAmount = 1000;
+        long useAmount = 500;
 
-        PointHistory pointHistory = new PointHistory(historyId,userId, initAmount, TransactionType.CHARGE, System.currentTimeMillis());
-        List<PointHistory> pointHistories =List.of(pointHistory);
+        PointHistory pointHistory = new PointHistory(pointId, userId, chargeAmount, CHARGE, System.currentTimeMillis());
+        PointHistory pointHistory2 = new PointHistory(pointId, userId, useAmount, CHARGE, System.currentTimeMillis());
+        List<PointHistory> histories = List.of(pointHistory, pointHistory2);
+
+        when(pointHistoryRepository.selectAllByUserId(userId)).thenReturn(histories);
 
         //when
-        when(pointHistoryRepository.insert(userId,initAmount,TransactionType.CHARGE, System.currentTimeMillis())).thenReturn(pointHistory);
-        when(pointHistoryRepository.selectAllByUserId(userId)).thenReturn(pointHistories);
         List<PointHistory> result = pointService.getHistory(userId);
+
         //then
-        assertThat(result.size()).isEqualTo(1);
+        assertThat(result.size()).isEqualTo(2);
     }
 }
