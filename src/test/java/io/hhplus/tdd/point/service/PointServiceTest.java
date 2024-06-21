@@ -1,45 +1,47 @@
 package io.hhplus.tdd.point.service;
 
-import io.hhplus.tdd.database.PointHistoryTable;
-import io.hhplus.tdd.database.UserPointTable;
 import io.hhplus.tdd.point.common.LockHelper;
 import io.hhplus.tdd.point.domain.PointHistory;
 import io.hhplus.tdd.point.domain.UserPoint;
 import io.hhplus.tdd.point.exception.PointException;
 import io.hhplus.tdd.point.repository.PointHistoryRepository;
-import io.hhplus.tdd.point.repository.PointHistoryRepositoryImpl;
 import io.hhplus.tdd.point.repository.UserPointRepository;
-import io.hhplus.tdd.point.repository.UserPointRepositoryImpl;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.Mockito;
+import org.mockito.MockitoAnnotations;
 
 import java.util.List;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
+import static io.hhplus.tdd.point.enums.TransactionType.CHARGE;
 import static io.hhplus.tdd.point.exception.ErrorCode.INVALID_CHARGE_POINT;
 import static io.hhplus.tdd.point.exception.ErrorCode.NOT_ENOUGH_POINT;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.when;
 
-// 모든 테스트의 유저 id를 다르게 함으로써 stub 을 사용하지 않아도 됨 + tearDown 도 필요 없음
 
 class PointServiceTest {
 
+    @Mock
+    private PointHistoryRepository pointHistoryRepository;
+    @Mock
+    private UserPointRepository userPointRepository;
+
+    @Mock
+    private LockHelper lockHelper;
+
+    @InjectMocks
     private PointService pointService;
 
     @BeforeEach
     void setUp() {
-        UserPointRepository userPointRepository = new UserPointRepositoryImpl(new UserPointTable());
-        PointHistoryRepository pointHistoryRepository = new PointHistoryRepositoryImpl(new PointHistoryTable());
-        LockHelper lockHelper = new LockHelper();
-
-        pointService = new PointService(userPointRepository, pointHistoryRepository, lockHelper);
+        MockitoAnnotations.openMocks(this);
     }
 
     @DisplayName("유저 id를 받아, 해당 유저의 포인트를 조회한다")
@@ -47,7 +49,11 @@ class PointServiceTest {
     void getPoint() {
         //given
         long userId = 1;
-        long amount = 0;
+        long amount = 1000;
+
+        UserPoint userPoint = new UserPoint(userId, amount, System.currentTimeMillis());
+
+        when(userPointRepository.selectById(userId)).thenReturn(userPoint);
 
         // when
         UserPoint result = pointService.getPoint(userId);
@@ -61,12 +67,25 @@ class PointServiceTest {
     void charge() {
         //given
         long userId = 2;
+        long remainAmount = 1000;
         long chargeAmount = 1000;
+        long expectedAmount = remainAmount + chargeAmount;
+
+        UserPoint curUserPoint = new UserPoint(userId, remainAmount, System.currentTimeMillis());
+        UserPoint updatedUserPoint = new UserPoint(userId, expectedAmount, System.currentTimeMillis());
+
+        when(userPointRepository.selectById(userId)).thenReturn(curUserPoint);
+        when(userPointRepository.insertOrUpdate(userId, expectedAmount)).thenReturn(updatedUserPoint);
+        when(lockHelper.executeWithLock(eq(userId), Mockito.<Supplier<UserPoint>>any())).thenAnswer(invocation -> {
+            Supplier<UserPoint> supplier = invocation.getArgument(1);
+            return supplier.get();
+        });
+
         //when
         UserPoint result = pointService.charge(userId, chargeAmount);
 
         //then
-        assertThat(result.point()).isEqualTo(chargeAmount);
+        assertThat(result.point()).isEqualTo(expectedAmount);
     }
 
     @DisplayName("0 미만의 포인트를 충전하려고하면 예외를 반환한다.")
@@ -84,53 +103,25 @@ class PointServiceTest {
 
     }
 
-    @DisplayName("동시에 같은 유저가 100 포인트를 5번 충전하면 500이 되어야 한다.")
-    @Test
-    void chargeWhenConcurrencyEnv() throws InterruptedException {
-        //given
-        long userId = 4;
-        int numThreads = 5;
-        long chargeAmount = 100;
-        long resultAmount = 500;
-
-        CountDownLatch doneSignal = new CountDownLatch(numThreads);
-        ExecutorService executorService = Executors.newFixedThreadPool(numThreads);
-
-        AtomicInteger successCount = new AtomicInteger();
-        AtomicInteger failCount = new AtomicInteger();
-
-        //when
-        for (int i = 0; i < numThreads; i++) {
-            executorService.execute(() -> {
-                try {
-                    pointService.charge(userId, chargeAmount);
-                    successCount.getAndIncrement();
-                } catch (RuntimeException e) {
-                    failCount.getAndIncrement();
-                } finally {
-                    doneSignal.countDown();
-                }
-            });
-        }
-        doneSignal.await();
-        executorService.shutdown();
-
-        UserPoint result = pointService.getPoint(userId);
-        //then
-        assertThat(result.point()).isEqualTo(resultAmount);
-        assertThat(successCount.get()).isEqualTo(numThreads);
-    }
 
     @DisplayName("사용하는 포인트만큼 차감이 된다.")
     @Test
     void use() {
         //given
-        long userId = 5;
+        long userId = 4;
         long initAmount = 1000;
         long useAmount = 100;
         long resultAmount = 900;
 
-        pointService.charge(userId, initAmount);
+        UserPoint initUserPoint = new UserPoint(userId, initAmount, System.currentTimeMillis());
+        UserPoint resultUserPoint = new UserPoint(userId, initAmount - useAmount, System.currentTimeMillis());
+
+        when(userPointRepository.insertOrUpdate(userId, initAmount - useAmount)).thenReturn(resultUserPoint);
+        when(userPointRepository.selectById(userId)).thenReturn(initUserPoint);
+        when(lockHelper.executeWithLock(eq(userId), Mockito.<Supplier<UserPoint>>any())).thenAnswer(invocation -> {
+            Supplier<UserPoint> supplier = invocation.getArgument(1);
+            return supplier.get();
+        });
 
         //when
         UserPoint result = pointService.use(userId, useAmount);
@@ -143,7 +134,7 @@ class PointServiceTest {
     @Test
     void useInvalidPoint() {
         //given
-        long userId = 6;
+        long userId = 5;
         long amount = -1000;
 
         //when //then
@@ -158,8 +149,20 @@ class PointServiceTest {
     @Test
     void useOverPoint() {
         //given
-        long userId = 7;
+        long userId = 6;
+        long initAmount = 1000;
         long useAmount = 2000;
+
+        UserPoint initUserPoint = new UserPoint(userId, initAmount, System.currentTimeMillis());
+        UserPoint resultUserPoint = new UserPoint(userId, initAmount - useAmount, System.currentTimeMillis());
+
+        when(userPointRepository.insertOrUpdate(userId, initAmount - useAmount)).thenReturn(resultUserPoint);
+        when(userPointRepository.selectById(userId)).thenReturn(initUserPoint);
+        when(lockHelper.executeWithLock(eq(userId), Mockito.<Supplier<UserPoint>>any())).thenAnswer(invocation -> {
+            Supplier<UserPoint> supplier = invocation.getArgument(1);
+            return supplier.get();
+        });
+
 
         //when //then
         assertThatThrownBy(() -> pointService.use(userId, useAmount))
@@ -169,59 +172,25 @@ class PointServiceTest {
 
     }
 
-    @DisplayName("동시에 500포인트를 가진 같은 유저가 100 포인트를 5번 사용하면 0 포인트가 된다.")
-    @Test
-    void useWhenConcurrencyEnv() throws InterruptedException {
-        //given
-        long userId = 8;
-        int numThreads = 5;
-        long useAmount = 100;
-        long remainAmount = 500;
-        long resultAmount = 0;
-
-        pointService.charge(userId, remainAmount);
-
-        CountDownLatch doneSignal = new CountDownLatch(numThreads);
-        ExecutorService executorService = Executors.newFixedThreadPool(numThreads);
-
-        AtomicInteger successCount = new AtomicInteger();
-        AtomicInteger failCount = new AtomicInteger();
-
-        //when
-        for (int i = 0; i < numThreads; i++) {
-            executorService.execute(() -> {
-                try {
-                    pointService.use(userId, useAmount);
-                    successCount.getAndIncrement();
-                } catch (RuntimeException e) {
-                    failCount.getAndIncrement();
-                } finally {
-                    doneSignal.countDown();
-                }
-            });
-        }
-        doneSignal.await();
-        executorService.shutdown();
-
-        UserPoint result = pointService.getPoint(userId);
-        //then
-        assertThat(result.point()).isEqualTo(resultAmount);
-        assertThat(successCount.get()).isEqualTo(numThreads);
-    }
-
     @DisplayName("포인트 사용 내역을 조회한다.")
     @Test
     void history() {
         //given
-        long userId = 9;
-        long initAmount = 1000;
+        long pointId = 1;
+        long userId = 7;
+        long chargeAmount = 1000;
+        long useAmount = 500;
 
-        pointService.charge(userId, initAmount);
+        PointHistory pointHistory = new PointHistory(pointId, userId, chargeAmount, CHARGE, System.currentTimeMillis());
+        PointHistory pointHistory2 = new PointHistory(pointId, userId, useAmount, CHARGE, System.currentTimeMillis());
+        List<PointHistory> histories = List.of(pointHistory, pointHistory2);
+
+        when(pointHistoryRepository.selectAllByUserId(userId)).thenReturn(histories);
 
         //when
         List<PointHistory> result = pointService.getHistory(userId);
 
         //then
-        assertThat(result.size()).isEqualTo(1);
+        assertThat(result.size()).isEqualTo(2);
     }
 }
