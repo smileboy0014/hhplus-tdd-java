@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+// UserPoint 에 대한 단위 테스트
 class UserPointTest {
 
     @DisplayName("처음 생성된 유저의 포인트는 0이다.")
